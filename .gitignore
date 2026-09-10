@@ -1,0 +1,26 @@
+node_modules/
+dist/
+*.dmg
+*.app/
+*.app/**
+*.app.previous.*
+
+.env
+.env.*
+!.env.example
+
+.DS_Store
+npm-debug.log*
+.backup-*/
+*.swp
+*.swo
+.swiftpm/
+.build/
+DerivedData/
+
+# 本机交付记录和 AI 工作笔记不属于公开源码
+AI修改指令.md
+*验收*.txt
+*交付说明*.txt
+*修复记录*.txt
+*本轮规划*.txt

@@ -1,0 +1,17 @@
+{
+  "name": "轻量项目助理",
+  "short_name": "项目助理",
+  "description": "以 Microsoft To Do 为唯一任务数据源的轻量中文控制台",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f2f5fb",
+  "theme_color": "#282d4a",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

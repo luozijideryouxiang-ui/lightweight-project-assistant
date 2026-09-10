@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f1f3f5" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#171a1e" />
+    <meta name="description" content="以 Microsoft To Do 为唯一任务数据源的轻量中文项目助理" />
+    <title>轻量项目助理</title>
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" href="icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css?v=20260910-board-responsive-capsules" />
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+    <noscript>
+      <main class="noscript-card">
+        <h1>需要启用 JavaScript</h1>
+        <p>轻量项目助理需要浏览器脚本来连接 Microsoft To Do API。</p>
+      </main>
+    </noscript>
+    <script src="app.js?v=20260910-board-responsive-capsules" defer></script>
+  </body>
+</html>
