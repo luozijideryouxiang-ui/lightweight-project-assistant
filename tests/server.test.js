@@ -224,6 +224,9 @@ function makeGraphFixture() {
         state.graphWrites.push({ method, path, listId, taskId, body: clone(body) });
         return jsonResponse(200, task);
       }
+      if (segments.length === 7 && method === 'GET' && ['checklistItems', 'linkedResources', 'attachments', 'extensions'].includes(segments[6])) {
+        return jsonResponse(200, { value: [] });
+      }
     }
     throw new Error(`unmocked Graph request: ${method} ${path}`);
   };

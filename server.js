@@ -5,6 +5,7 @@ import { extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { DEFAULT_TEMPLATE, localDate, shiftDate, taskFields, validateTemplate, projectSchedule, parseDatePhrase, parseRules, readPrivateJson, writePrivateJson, PlanStore, ensureEstimatedReminders, applyPlanEdits } from './workflow.js';
+import { moveTaskAcrossLists } from './graph-move.js';
 // common 允许个人账号与工作/学校账号都完成 Microsoft To Do 设备码登录。
 process.env.MS_TENANT ||= "common";
 
@@ -350,6 +351,7 @@ async function graphRequest(path, init = {}, attempt = 0) {
     return graphRequest(path, init, attempt + 1);
   }
   const error = new Error(`Microsoft Graph ${response.status}: ${detail}`);
+  error.statusCode = response.status;
   error.definite = response.status >= 400 && response.status < 500 && ![408, 429].includes(response.status);
   throw error;
 }
@@ -1251,42 +1253,26 @@ async function performOperation(operation, plan) {
   if (operation.type === 'moveTask') {
     const lists = await listTaskLists({ paginate: true });
     const wanted = String(operation.toListName || '').trim().toLowerCase();
-    // 系统内置清单（Flagged Emails 等）不允许作为移动目标，即使模型给出名字也拒绝。
     const target = lists.find(list => String(list.displayName).trim().toLowerCase() === wanted
       && !HIDDEN_WELLKNOWN_LISTS.has(String(list.wellknownListName || '').trim().toLowerCase()));
     if (!target) {
       const error = new Error(`找不到清单「${operation.toListName}」，请确认清单名`); error.definite = true; throw error;
     }
     if (target.id === operation.fromListId) return { type: 'moved', task: null, warning: '任务已在该清单中，无需移动' };
-    // Microsoft Graph 的 To Do API 在 v1.0 没有跨清单移动端点
-    // （/me/todo/lists/{id}/tasks/{id}/move 仅存在于已废弃的 beta baseTask，调用会返回
-    // "Resource not found for the segment 'move'"）。按官方建议的等价做法：
-    // 在目标清单创建同内容任务，再删除原任务。
-    const source = await graphRequest(`/me/todo/lists/${encodeURIComponent(operation.fromListId)}/tasks/${encodeURIComponent(operation.taskId)}`);
-    const copy = { title: source.title };
-    if (source.body) copy.body = source.body;
-    if (source.importance) copy.importance = source.importance;
-    if (source.status) copy.status = source.status;
-    if (source.dueDateTime) copy.dueDateTime = source.dueDateTime;
-    if (source.reminderDateTime) {
-      copy.reminderDateTime = source.reminderDateTime;
-      copy.isReminderOn = source.isReminderOn !== false;
-    }
-    if (source.recurrence) copy.recurrence = source.recurrence;
-    if (Array.isArray(source.categories) && source.categories.length) copy.categories = source.categories;
-    const created = await graphRequest(`/me/todo/lists/${encodeURIComponent(target.id)}/tasks`, {
-      method: 'POST',
-      body: JSON.stringify(copy),
+
+    // Graph v1.0 has no documented todoTask move endpoint, so use a
+    // transaction-like copy + relationship copy + source delete sequence.
+    // The helper rolls back incomplete target copies and never deletes the
+    // source until every supported relationship has been copied.
+    const moved = await moveTaskAcrossLists({
+      graphRequest,
+      fromListId: operation.fromListId,
+      taskId: operation.taskId,
+      targetListId: target.id,
+      targetListName: target.displayName,
     });
-    let deleteWarning = '';
-    try {
-      await graphRequest(`/me/todo/lists/${encodeURIComponent(operation.fromListId)}/tasks/${encodeURIComponent(operation.taskId)}`, { method: 'DELETE' });
-    } catch {
-      // 副本已建好但原任务删不掉：明确告知，避免用户以为出现了重复创建。
-      deleteWarning = `已在「${target.displayName}」建好副本，但原清单里的「${source.title}」删除失败，请手动删除。`;
-    }
-    const warning = deleteWarning || await logAfterChange(target.id, `移动任务「${created.title}」到「${target.displayName}」`);
-    return { type: 'moved', task: created, warning, listId: target.id };
+    const warning = moved.warning || await logAfterChange(target.id, `移动任务「${moved.created.title}」到「${target.displayName}」`);
+    return { type: 'moved', task: moved.created, warning, listId: target.id };
   }
   if (operation.type === 'progressNote') {
     const task = await appendProjectLog(plan.listId, operation.text);

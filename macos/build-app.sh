@@ -72,34 +72,20 @@ rollback_and_cleanup() {
 }
 trap rollback_and_cleanup EXIT
 
-# 1) 解析 Node 路径（构建期写进 Info.plist 默认值；Swift 端运行时会再次解析）
-NODE_CANDIDATES=(
-  "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node"
-  "/opt/homebrew/bin/node"
-  "/usr/local/bin/node"
-  "/usr/bin/node"
-)
-NODE_BIN=""
-if [[ -n "${NODE_BINARY:-}" ]]; then
-  if [[ ! -x "$NODE_BINARY" ]]; then
-    echo "NODE_BINARY 不可执行：$NODE_BINARY" >&2
+# 1) 固定官方 Node runtime 版本；构建时下载并校验 arm64 + x64 两套官方二进制。
+#    这样目标机器无需预装 Node，也不会依赖 Homebrew dylib。
+NODE_RUNTIME_VERSION="${NODE_RUNTIME_VERSION:-22.22.1}"
+NODE_DIST_ROOT="${NODE_DIST_ROOT:-https://nodejs.org/dist/v${NODE_RUNTIME_VERSION}}"
+NODE_CACHE_DIR="${NODE_RUNTIME_CACHE_DIR:-${HOME}/Library/Caches/MicrosoftTodoFocusConsole/node-v${NODE_RUNTIME_VERSION}}"
+echo "Node runtime：v${NODE_RUNTIME_VERSION}（官方 arm64 + x64）"
+echo "项目根：$PROJECT_ROOT"
+
+for required_tool in curl shasum tar file xcrun; do
+  if ! command -v "$required_tool" >/dev/null 2>&1; then
+    echo "构建失败：缺少工具 $required_tool" >&2
     exit 1
   fi
-  NODE_BIN="$NODE_BINARY"
-else
-  for c in "${NODE_CANDIDATES[@]}"; do
-    if [[ -x "$c" ]]; then NODE_BIN="$c"; break; fi
-  done
-fi
-if [[ -z "$NODE_BIN" ]]; then
-  NODE_BIN="$(command -v node || true)"
-fi
-if [[ -z "$NODE_BIN" ]]; then
-  echo "未找到 Node.js。请先安装 Node.js 20+。" >&2
-  exit 1
-fi
-echo "使用 Node：$NODE_BIN"
-echo "项目根：$PROJECT_ROOT"
+done
 
 for required_path in \
   "$PROJECT_ROOT/server.js" \
@@ -127,38 +113,85 @@ if [[ ! -f "$STAGED_APP/Contents/Resources/icon.icns" ]]; then
   echo "图标生成失败：未找到 icon.icns" >&2; exit 1;
 fi
 
-# 3.5) 嵌入 Node 服务、静态资源、依赖和构建机 Node 运行时。
-#      server.js 使用 import.meta.url 定位同目录下的 public/ 和 node_modules/，
-#      因此整个服务目录必须保持在同一个 bundle 内路径下。
+# 3.5) 嵌入服务资源与可分发 Node runtime。
 BUNDLE_SERVER_DIR="$STAGED_APP/Contents/Resources/server"
-BUNDLE_NODE_BIN="$STAGED_APP/Contents/Resources/node/bin/node"
-mkdir -p "$BUNDLE_SERVER_DIR" "$(dirname "$BUNDLE_NODE_BIN")"
+BUNDLE_NODE_ROOT="$STAGED_APP/Contents/Resources/node"
+BUNDLE_NODE_BIN="$BUNDLE_NODE_ROOT/bin/node"
+mkdir -p "$BUNDLE_SERVER_DIR" "$BUNDLE_NODE_ROOT/bin"
 cp "$PROJECT_ROOT/server.js" "$BUNDLE_SERVER_DIR/server.js"
 cp "$PROJECT_ROOT/workflow.js" "$BUNDLE_SERVER_DIR/workflow.js"
+cp "$PROJECT_ROOT/graph-move.js" "$BUNDLE_SERVER_DIR/graph-move.js"
 cp -R "$PROJECT_ROOT/public" "$BUNDLE_SERVER_DIR/"
 cp -R "$PROJECT_ROOT/node_modules" "$BUNDLE_SERVER_DIR/"
-cp -L "$NODE_BIN" "$BUNDLE_NODE_BIN"
+
+mkdir -p "$NODE_CACHE_DIR"
+CHECKSUM_FILE="$NODE_CACHE_DIR/SHASUMS256.txt"
+if [[ ! -s "$CHECKSUM_FILE" ]]; then
+  curl -fL --retry 3 "$NODE_DIST_ROOT/SHASUMS256.txt" -o "$CHECKSUM_FILE"
+fi
+
+install_node_runtime() {
+  local dist_arch="$1"
+  local bundle_arch="$2"
+  local archive="node-v${NODE_RUNTIME_VERSION}-darwin-${dist_arch}.tar.gz"
+  local archive_path="$NODE_CACHE_DIR/$archive"
+  local expected actual extracted
+  if [[ ! -s "$archive_path" ]]; then
+    curl -fL --retry 3 "$NODE_DIST_ROOT/$archive" -o "$archive_path"
+  fi
+  expected="$(awk -v name="$archive" '$2 == name { print $1 }' "$CHECKSUM_FILE")"
+  if [[ -z "$expected" ]]; then
+    echo "构建失败：官方校验文件中找不到 $archive" >&2
+    exit 1
+  fi
+  actual="$(shasum -a 256 "$archive_path" | awk '{print $1}')"
+  if [[ "$actual" != "$expected" ]]; then
+    echo "构建失败：Node runtime 校验失败：$archive" >&2
+    rm -f "$archive_path"
+    exit 1
+  fi
+  tar -xzf "$archive_path" -C "$STAGE_ROOT"
+  extracted="$STAGE_ROOT/node-v${NODE_RUNTIME_VERSION}-darwin-${dist_arch}/bin/node"
+  mkdir -p "$BUNDLE_NODE_ROOT/$bundle_arch/bin"
+  cp "$extracted" "$BUNDLE_NODE_ROOT/$bundle_arch/bin/node"
+  chmod 755 "$BUNDLE_NODE_ROOT/$bundle_arch/bin/node"
+}
+
+install_node_runtime arm64 arm64
+install_node_runtime x64 x86_64
+
+cat > "$BUNDLE_NODE_BIN" <<'NODE_WRAPPER'
+#!/bin/sh
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+case "$(uname -m)" in
+  arm64) exec "$ROOT/arm64/bin/node" "$@" ;;
+  x86_64) exec "$ROOT/x86_64/bin/node" "$@" ;;
+  *) echo "Unsupported macOS architecture: $(uname -m)" >&2; exit 126 ;;
+esac
+NODE_WRAPPER
 chmod 755 "$BUNDLE_NODE_BIN"
 
 for bundled_path in \
   "$BUNDLE_SERVER_DIR/server.js" \
   "$BUNDLE_SERVER_DIR/workflow.js" \
+  "$BUNDLE_SERVER_DIR/graph-move.js" \
   "$BUNDLE_SERVER_DIR/public" \
-  "$BUNDLE_SERVER_DIR/node_modules"; do
+  "$BUNDLE_SERVER_DIR/node_modules" \
+  "$BUNDLE_NODE_ROOT/arm64/bin/node" \
+  "$BUNDLE_NODE_ROOT/x86_64/bin/node"; do
   if [[ ! -e "$bundled_path" ]]; then
     echo "构建失败：运行时资源嵌入不完整：$bundled_path" >&2
     exit 1
   fi
 done
-if [[ ! -x "$BUNDLE_NODE_BIN" ]]; then
-  echo "构建失败：bundle 内 Node 不可执行：$BUNDLE_NODE_BIN" >&2
-  exit 1
-fi
+file "$BUNDLE_NODE_ROOT/arm64/bin/node" | grep -q 'arm64' || { echo "构建失败：arm64 Node 架构不正确" >&2; exit 1; }
+file "$BUNDLE_NODE_ROOT/x86_64/bin/node" | grep -Eq 'x86_64|x86_64h' || { echo "构建失败：x64 Node 架构不正确" >&2; exit 1; }
 if ! "$BUNDLE_NODE_BIN" --version >/dev/null 2>&1; then
-  echo "构建失败：bundle 内 Node 无法运行：$BUNDLE_NODE_BIN" >&2
+  echo "构建失败：当前机器无法运行 bundle 内对应架构的 Node" >&2
   exit 1
 fi
 
+# 4) 写主程序 Info.plist
 # 4) 写主程序 Info.plist
 echo "写 Info.plist..."
 cat > "$STAGED_APP/Contents/Info.plist" <<PLIST
@@ -223,20 +256,20 @@ cat > "$STAGED_APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# 5) 编译主程序 Swift
-echo "编译主程序 Swift..."
-ARCH=$(uname -m)
-case "$ARCH" in
-  arm64) TARGET_TRIPLE="arm64-apple-macos14" ;;
-  x86_64) TARGET_TRIPLE="x86_64-apple-macos14" ;;
-  *) echo "未知架构 $ARCH"; exit 1 ;;
-esac
-
-"$SWIFT_BIN" -O "$SOURCE" -o "$STAGED_APP/Contents/MacOS/${APP_NAME}" \
-  -parse-as-library \
-  -target "$TARGET_TRIPLE" \
+# 5) 编译 universal 主程序 Swift（Apple Silicon + Intel）
+echo "编译 universal 主程序 Swift..."
+MAIN_EXEC="$STAGED_APP/Contents/MacOS/${APP_NAME}"
+"$SWIFT_BIN" -O "$SOURCE" -o "$MAIN_EXEC.arm64" \
+  -parse-as-library -target "arm64-apple-macos14" \
   -framework SwiftUI -framework AppKit -framework WebKit -framework Speech -framework AVFoundation
+"$SWIFT_BIN" -O "$SOURCE" -o "$MAIN_EXEC.x86_64" \
+  -parse-as-library -target "x86_64-apple-macos14" \
+  -framework SwiftUI -framework AppKit -framework WebKit -framework Speech -framework AVFoundation
+xcrun lipo -create "$MAIN_EXEC.arm64" "$MAIN_EXEC.x86_64" -output "$MAIN_EXEC"
+rm -f "$MAIN_EXEC.arm64" "$MAIN_EXEC.x86_64"
+xcrun lipo -verify_arch arm64 x86_64 "$MAIN_EXEC"
 
+# 5.5) 编译并嵌入 WidgetKit 桌面小组件扩展（源码：macos/widget）
 # 5.5) 编译并嵌入 WidgetKit 桌面小组件扩展（源码：macos/widget）
 echo "编译 WidgetKit 桌面小组件..."
 WIDGET_SRC_DIR="widget"
@@ -282,10 +315,16 @@ cat > "$WIDGET_APPLEX/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-"$SWIFT_BIN" -O "$WIDGET_SRC_DIR"/*.swift -o "$WIDGET_APPLEX/Contents/MacOS/${WIDGET_EXEC}" \
-  -parse-as-library \
-  -target "$TARGET_TRIPLE" \
+WIDGET_BIN="$WIDGET_APPLEX/Contents/MacOS/${WIDGET_EXEC}"
+"$SWIFT_BIN" -O "$WIDGET_SRC_DIR"/*.swift -o "$WIDGET_BIN.arm64" \
+  -parse-as-library -target "arm64-apple-macos14" \
   -framework WidgetKit -framework SwiftUI -framework Foundation
+"$SWIFT_BIN" -O "$WIDGET_SRC_DIR"/*.swift -o "$WIDGET_BIN.x86_64" \
+  -parse-as-library -target "x86_64-apple-macos14" \
+  -framework WidgetKit -framework SwiftUI -framework Foundation
+xcrun lipo -create "$WIDGET_BIN.arm64" "$WIDGET_BIN.x86_64" -output "$WIDGET_BIN"
+rm -f "$WIDGET_BIN.arm64" "$WIDGET_BIN.x86_64"
+xcrun lipo -verify_arch arm64 x86_64 "$WIDGET_BIN"
 
 if [[ ! -x "$WIDGET_APPLEX/Contents/MacOS/${WIDGET_EXEC}" ]]; then
   echo "构建失败：小组件扩展可执行文件缺失" >&2

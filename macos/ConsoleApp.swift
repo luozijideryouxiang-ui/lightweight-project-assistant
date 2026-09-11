@@ -160,17 +160,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
-        // 确认没有可用服务，才重启；带退避与次数上限，避免重启风暴。
+        // 确认没有可用服务，才重启；5 次失败后冷却一分钟，再开启新的重试窗口。
         let now = Date()
-        guard now.timeIntervalSince(lastRestartAt) >= 5 else { return }
-        lastRestartAt = now
         if restartAttempts >= 5 {
-            // Do not permanently disable self-healing. After a one-minute
-            // cooldown, allow a fresh bounded retry window.
             guard now.timeIntervalSince(lastRestartAt) >= 60 else { return }
             restartAttempts = 0
         }
+        guard now.timeIntervalSince(lastRestartAt) >= 5 else { return }
         restartAttempts += 1
+        lastRestartAt = now
         logger.info("本地服务无响应，正在自动重启（第 \(self.restartAttempts) 次）")
         await startServer()
     }
