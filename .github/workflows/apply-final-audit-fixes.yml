@@ -1,0 +1,47 @@
+name: Apply final audit fixes
+
+on:
+  push:
+    branches:
+      - fix/todo-audit-bugs
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ !contains(github.event.head_commit.message, '[final-audit-applied]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: fix/todo-audit-bugs
+          fetch-depth: 0
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Apply guarded fixes
+        run: node scripts/apply-final-audit-fixes.mjs
+      - name: Install dependencies
+        run: npm ci
+      - name: Check
+        run: npm run check
+      - name: Shell syntax
+        run: bash -n macos/build-app.sh
+      - name: Test
+        run: npm test
+      - name: Commit fixes
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add server.js macos/ConsoleApp.swift macos/build-app.sh package.json .github/workflows/ci.yml README.md
+          git commit -m "fix: complete todo reliability hardening [final-audit-applied]"
+          git push origin HEAD:fix/todo-audit-bugs
