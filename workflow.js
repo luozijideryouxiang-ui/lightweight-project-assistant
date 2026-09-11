@@ -84,6 +84,14 @@ export function taskFields(input, { creating = false, existing = {}, timeZone = 
   if (input.clearDueDate === true) patch.dueDateTime = null;
   if (input.clearReminder === true) { patch.reminderDateTime = null; patch.isReminderOn = false; }
   if (input.recurrence !== undefined) patch.recurrence = recurrenceRule(input.recurrence, input.dueDateTime || existing.dueDateTime?.dateTime, timeZone);
+  // Moving the due date of an existing recurring task must also move the
+  // recurrence anchor. Otherwise Graph keeps the old startDate even though
+  // the task now displays a different due date.
+  if (input.dueDateTime && input.recurrence === undefined && existing.recurrence) {
+    const type = existing.recurrence?.pattern?.type;
+    const kind = type === 'absoluteMonthly' ? 'monthly' : (type === 'daily' || type === 'weekly' ? type : null);
+    if (kind) patch.recurrence = recurrenceRule(kind, input.dueDateTime, timeZone);
+  }
   if (input.clearRecurrence === true) patch.recurrence = null;
   if (patch.dueDateTime === null && (patch.recurrence || (existing.recurrence && patch.recurrence !== null))) throw new Error('重复任务请保留日期，或同时关闭重复');
   return patch;
@@ -116,7 +124,21 @@ export function parseDatePhrase(text, today = localDate()) {
   const full = text.match(/(20\d{2})[-/.年](\d{1,2})[-/.月](\d{1,2})日?/u);
   if (full) return validDate(`${full[1]}-${full[2].padStart(2, '0')}-${full[3].padStart(2, '0')}`);
   const short = text.match(/(\d{1,2})月(\d{1,2})日?/u);
-  if (short) return validDate(`${today.slice(0, 4)}-${short[1].padStart(2, '0')}-${short[2].padStart(2, '0')}`);
+  if (short) {
+    const month = short[1].padStart(2, '0');
+    const day = short[2].padStart(2, '0');
+    const currentYear = Number(today.slice(0, 4));
+    const current = `${currentYear}-${month}-${day}`;
+    try {
+      validDate(current);
+      if (current >= today) return current;
+    } catch { /* Try the next valid future year (for example Feb 29). */ }
+    for (let year = currentYear + 1; year <= currentYear + 8; year += 1) {
+      const candidate = `${year}-${month}-${day}`;
+      try { return validDate(candidate); } catch { /* continue */ }
+    }
+    throw new Error('日期不存在');
+  }
   if (/后天/.test(text)) return shiftDate(today, 2);
   if (/明天/.test(text)) return shiftDate(today, 1);
   if (/今天|今晚/.test(text)) return today;
@@ -187,7 +209,18 @@ export function parseRules(instruction, tasks, today = localDate()) {
 }
 
 export async function readPrivateJson(path, fallback) {
-  try { return JSON.parse(await readFile(path, 'utf8')); } catch (error) { if (error.code === 'ENOENT') return fallback; throw new Error('本地设置文件无法读取，请检查文件权限或格式'); }
+  try {
+    return JSON.parse(await readFile(path, 'utf8'));
+  } catch (error) {
+    if (error.code === 'ENOENT') return fallback;
+    // A truncated/corrupt JSON file should not brick the local service. Keep a
+    // forensic copy and recover with defaults; permission/I/O errors still fail.
+    if (error instanceof SyntaxError) {
+      try { await rename(path, `${path}.corrupt-${Date.now()}`); } catch { /* best effort */ }
+      return fallback;
+    }
+    throw new Error('本地设置文件无法读取，请检查文件权限或格式');
+  }
 }
 
 export async function writePrivateJson(path, value) {
@@ -304,8 +337,8 @@ function localClock(now, timeZone = 'Asia/Shanghai') {
   return `${value('year')}-${value('month')}-${value('day')}T${value('hour')}:${value('minute')}:${value('second')}`;
 }
 
-function futureEstimatedReminder(preferredDate, today, now) {
-  const nowLocal = localClock(now);
+function futureEstimatedReminder(preferredDate, today, now, timeZone) {
+  const nowLocal = localClock(now, timeZone);
   const baseDate = typeof today === 'string' && /^20\d{2}-\d{2}-\d{2}$/.test(today) ? today : localDate();
   let date = typeof preferredDate === 'string' && /^20\d{2}-\d{2}-\d{2}$/.test(preferredDate) ? preferredDate : shiftDate(baseDate, 1);
   let value = `${date}T09:00:00`;
@@ -314,19 +347,19 @@ function futureEstimatedReminder(preferredDate, today, now) {
 }
 
 // 用户没有说时间时，为新建任务补一个可调整的预估提醒（到期日当天或次日上午 09:00）。
-export function ensureEstimatedReminders(plan, instruction, today = localDate(), now = new Date()) {
+export function ensureEstimatedReminders(plan, instruction, today = localDate(new Date(), process.env.TIME_ZONE || 'Asia/Shanghai'), now = new Date(), timeZone = process.env.TIME_ZONE || 'Asia/Shanghai') {
   if (!plan || !Array.isArray(plan.operations)) return plan;
   if (typeof instruction === 'string' && /不用提醒|无需提醒|不需要提醒|不设置提醒|别提醒|不要提醒|关闭提醒|有空|不急/.test(instruction)) return plan;
   const estimated = [];
   for (const operation of plan.operations) {
     if (!operation || operation.type !== 'create' || operation.reminderDateTime || operation.clearReminder) continue;
     const preferredDate = operation.dueDateTime ? operation.dueDateTime.slice(0, 10) : shiftDate(today, 1);
-    const reminderDateTime = futureEstimatedReminder(preferredDate, today, now);
+    const reminderDateTime = futureEstimatedReminder(preferredDate, today, now, timeZone);
     operation.reminderDateTime = reminderDateTime;
     operation.estimatedReminder = true;
     const reminderPatch = taskFields({ reminderDateTime }, {
       existing: operation.dueDateTime ? { dueDateTime: { dateTime: operation.dueDateTime }, recurrence: operation.recurrence } : {},
-      timeZone: 'Asia/Shanghai',
+      timeZone,
     });
     if (!operation.patch || typeof operation.patch !== 'object') {
       operation.patch = taskFields({
@@ -335,7 +368,7 @@ export function ensureEstimatedReminders(plan, instruction, today = localDate(),
         ...(operation.importance ? { importance: operation.importance } : {}),
         ...(operation.dueDateTime ? { dueDateTime: operation.dueDateTime } : {}),
         reminderDateTime,
-      }, { creating: true, timeZone: 'Asia/Shanghai' });
+      }, { creating: true, timeZone });
     } else {
       Object.assign(operation.patch, reminderPatch);
     }

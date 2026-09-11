@@ -164,11 +164,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let now = Date()
         guard now.timeIntervalSince(lastRestartAt) >= 5 else { return }
         lastRestartAt = now
-        restartAttempts += 1
-        guard restartAttempts <= 5 else {
-            logger.error("本地服务连续重启失败，已暂停自动恢复，等待下次触发")
-            return
+        if restartAttempts >= 5 {
+            // Do not permanently disable self-healing. After a one-minute
+            // cooldown, allow a fresh bounded retry window.
+            guard now.timeIntervalSince(lastRestartAt) >= 60 else { return }
+            restartAttempts = 0
         }
+        restartAttempts += 1
         logger.info("本地服务无响应，正在自动重启（第 \(self.restartAttempts) 次）")
         await startServer()
     }
@@ -188,6 +190,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Node 服务管理
 
     private func startServer() async {
+        // A bundled Node process can stay alive while its HTTP loop is wedged.
+        // Kill it before replacing serverProcess or it becomes an orphan that
+        // can keep a port/resources until logout.
+        if usesBundledRuntime, let previous = serverProcess, previous.isRunning {
+            previous.terminationHandler = nil
+            previous.terminate()
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            serverProcess = nil
+        }
         // 开发环境可以复用已有服务；可分发 bundle 必须启动自己的内嵌服务，
         // 避免复用其它版本占用 4177/4178 的服务而出现“安装后界面没更新”。
         let existing = usesBundledRuntime ? nil : await findExistingServer()

@@ -366,22 +366,29 @@ function formatLocalTimestamp(date = new Date()) {
   }).format(date).replaceAll("/", "-");
 }
 
+const projectLogQueues = new Map();
+
 async function appendProjectLog(listId, text) {
   if (typeof text !== "string" || !text.trim()) throw new Error("进度内容不能为空");
-  const line = `[${formatLocalTimestamp()}] ${text.trim().replace(/\s+/g, " ")}`;
-  const tasks = await listTasks(listId, { paginate: true, top: 100 });
-  const existing = tasks.find((task) => task.title === PROJECT_LOG_TITLE);
-  if (existing) {
-    const current = existing.body?.content || "";
-    const next = `${current}${current ? "\n" : ""}${line}`.slice(-20000);
-    return updateTask(listId, existing.id, { body: next });
-  }
-  const created = await createTask(listId, {
-    title: PROJECT_LOG_TITLE,
-    body: line,
-    importance: "low",
+  const previous = projectLogQueues.get(listId) || Promise.resolve();
+  const run = previous.catch(() => {}).then(async () => {
+    const line = `[${formatLocalTimestamp()}] ${text.trim().replace(/\s+/g, " ")}`;
+    const tasks = await listTasks(listId, { paginate: true, top: 100 });
+    const existing = tasks.find((task) => task.title === PROJECT_LOG_TITLE);
+    if (existing) {
+      const current = existing.body?.content || "";
+      const next = `${current}${current ? "\n" : ""}${line}`.slice(-20000);
+      return updateTask(listId, existing.id, { body: next });
+    }
+    const created = await createTask(listId, {
+      title: PROJECT_LOG_TITLE,
+      body: line,
+      importance: "low",
+    });
+    return updateTask(listId, created.id, { status: "completed" });
   });
-  return updateTask(listId, created.id, { status: "completed" });
+  projectLogQueues.set(listId, run);
+  try { return await run; } finally { if (projectLogQueues.get(listId) === run) projectLogQueues.delete(listId); }
 }
 
 function isProgressTask(task) {
@@ -432,9 +439,17 @@ function modelsEndpointFor(provider) {
   if (!provider || !provider.endpoint) return null;
   try {
     const url = new URL(provider.endpoint);
-    if (url.hostname.endsWith('deepseek.com')) return `${url.origin}/models`;
-    if (url.hostname.endsWith('openrouter.ai')) return `${url.origin}/api/v1/models`;
-    return `${url.origin}/models`;
+    const path = url.pathname.replace(/\/+$/, '');
+    if (/\/chat\/completions$/i.test(path)) {
+      url.pathname = path.replace(/\/chat\/completions$/i, '/models');
+      url.search = '';
+      url.hash = '';
+      return url.toString().replace(/\/$/, '');
+    }
+    url.pathname = `${path}/models`.replace(/\/{2,}/g, '/');
+    url.search = '';
+    url.hash = '';
+    return url.toString().replace(/\/$/, '');
   } catch {
     return null;
   }
