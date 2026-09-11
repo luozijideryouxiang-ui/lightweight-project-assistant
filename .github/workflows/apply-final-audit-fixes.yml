@@ -44,6 +44,6 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add server.js macos/ConsoleApp.swift macos/build-app.sh package.json .github/workflows/ci.yml README.md tests/server.test.js
+          git add server.js macos/ConsoleApp.swift macos/build-app.sh package.json README.md tests/server.test.js
           git commit -m "fix: complete todo reliability hardening [final-audit-applied]"
           git push origin HEAD:fix/todo-audit-bugs
