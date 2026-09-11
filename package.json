@@ -14,7 +14,7 @@
   "description": "依托 Microsoft To Do 的轻量中文 AI 与语音项目控制台",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check workflow.js && node --check public/app.js",
+    "check": "node --check server.js && node --check workflow.js && node --check graph-move.js && node --check public/app.js",
     "test": "node --experimental-test-module-mocks --test tests/*.test.js",
     "auth": "node node_modules/@mag-cie/mcp-microsoft-todo/dist/auth.js"
   },

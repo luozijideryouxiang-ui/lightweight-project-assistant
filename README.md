@@ -81,13 +81,13 @@ bash build-app.sh
 
 构建脚本会：
 
-- 自动探测 Node（优先使用本机托管版本，其次 Homebrew，最后 `/usr/bin/node`）。
-- 用 `swiftc` 编译 `ConsoleApp.swift`（运行需 macOS 14+，构建需包含 macOS 26 SDK 的 Xcode）。
+- 下载并校验 Node.js 官方固定版本的 macOS arm64 与 x64 runtime，打包时不再复制 Homebrew/构建机 Node。可用 `NODE_RUNTIME_VERSION` 覆盖版本，并通过缓存目录复用下载。
+- 用 `swiftc` 分别编译 arm64 / x86_64，再用 `lipo` 合成 universal 主程序与 Widget（运行需 macOS 14+，构建需包含相应 SDK 的 Xcode）。
 - 用 `make-icon.swift` 现场绘制 .icns 图标。
 - 写入 `Info.plist`（含 `ServerProjectPath`、`NodeBinaryPath`、`NSMicrophoneUsageDescription` 等）。
 - ad-hoc 签名。
 
-构建后的 `.app` 会把 `server.js`、`workflow.js`、`public/`、`node_modules/` 和构建机的 Node 运行时一起放进 `Contents/Resources/`，安装目标机器不需要另装 Node 或复制源码。首次打开时在 App 内完成 Microsoft To Do 设备码登录；登录令牌按用户写入 `~/.mcp-microsoft-todo/token-cache.json`，不同 macOS 用户互不共享。
+构建后的 `.app` 会把 `server.js`、`workflow.js`、`graph-move.js`、`public/`、`node_modules/` 和经过 SHA-256 校验的官方 Node arm64/x64 runtime 一起放进 `Contents/Resources/`，安装目标机器不需要另装 Node 或复制源码；同一 App bundle 可在 Apple Silicon 与 Intel Mac 上运行。首次打开时在 App 内完成 Microsoft To Do 设备码登录；登录令牌按用户写入 `~/.mcp-microsoft-todo/token-cache.json`，不同 macOS 用户互不共享。
 
 推荐交付 `dist/轻量项目助理-1.1.0.dmg`：打开 DMG 后将 App 拖到“应用程序”文件夹即可。当前使用 ad-hoc 或本机自签名，未加入 Apple Developer notarization；其他用户首次打开若遇到 Gatekeeper，需要在 Finder 中右键 App 选择“打开”。
 

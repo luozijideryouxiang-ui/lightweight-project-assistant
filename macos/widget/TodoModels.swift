@@ -19,8 +19,10 @@ struct WTask: Decodable, Identifiable {
     let title: String
     let status: String
     let due: Date?
+    let reminder: Date?
+    let isReminderOn: Bool
 
-    enum CodingKeys: String, CodingKey { case id, title, status, dueDateTime, dueDate }
+    enum CodingKeys: String, CodingKey { case id, title, status, dueDateTime, dueDate, reminderDateTime, isReminderOn }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -32,6 +34,11 @@ struct WTask: Decodable, Identifiable {
         else if let s = try? c.decodeIfPresent(String.self, forKey: .dueDate) { raw = s }
         else if let obj = try? c.decodeIfPresent([String: String].self, forKey: .dueDateTime) { raw = obj["dateTime"] ?? obj["date"] }
         due = parseDate(raw)
+        isReminderOn = (try? c.decodeIfPresent(Bool.self, forKey: .isReminderOn)) ?? false
+        var reminderRaw: String? = nil
+        if let s = try? c.decodeIfPresent(String.self, forKey: .reminderDateTime) { reminderRaw = s }
+        else if let obj = try? c.decodeIfPresent([String: String].self, forKey: .reminderDateTime) { reminderRaw = obj["dateTime"] ?? obj["date"] }
+        reminder = parseDate(reminderRaw)
     }
 }
 
@@ -103,11 +110,12 @@ func buildFocus(from decoded: WResponse) -> (items: [FocusItem], total: Int, don
         for list in decoded.lists where !list.isFlagged {
             for t in (decoded.tasksByList[list.id] ?? []) {
                 if t.title.hasPrefix(PROGRESS_PREFIX) { continue }
-                total += 1
-                if t.status == "completed" { done += 1; continue }
                 let overdue = t.due.map { $0 < todayStart } ?? false
                 let dueToday = t.due.map { $0 >= todayStart && $0 < tomorrowStart } ?? false
-                guard overdue || dueToday || t.due == nil else { continue }
+                let reminderToday = t.isReminderOn && (t.reminder.map { $0 >= todayStart && $0 < tomorrowStart } ?? false)
+                guard dueToday || reminderToday else { continue }
+                total += 1
+                if t.status == "completed" { done += 1; continue }
                 items.append(FocusItem(
                     id: t.id, title: t.title, listName: list.displayName,
                     due: t.due, isOverdue: overdue, isDueToday: dueToday))
