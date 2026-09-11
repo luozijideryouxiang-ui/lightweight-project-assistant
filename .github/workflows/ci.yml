@@ -26,5 +26,7 @@ jobs:
         run: npm ci
       - name: Syntax check
         run: npm run check
+      - name: macOS build script syntax
+        run: bash -n macos/build-app.sh
       - name: Test
         run: npm test
